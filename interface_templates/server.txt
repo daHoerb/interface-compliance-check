@@ -1,0 +1,9 @@
+ switchport trunk native vlan 1000
+ switchport trunk allowed vlan 15
+ switchport mode trunk
+ device-tracking attach-policy IPDT_MAX_10
+ ip flow monitor SSA-FNF-MON input
+ ip flow monitor SSA-FNF-MON output
+ et-analytics enable
+ ip arp inspection trust
+ ip dhcp snooping trust

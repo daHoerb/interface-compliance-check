@@ -1,0 +1,8 @@
+
+ switchport trunk allowed vlan 1,66
+ switchport mode trunk
+ ip arp inspection trust
+ ip dhcp snooping trust
++ ip flow monitor SSA-FNF-MON input
++ ip flow monitor SSA-FNF-MON output
++ et-analytics enable

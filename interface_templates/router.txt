@@ -1,0 +1,9 @@
+ #description router
+ switchport trunk allowed vlan 1,3,5
+ switchport mode trunk
++ device-tracking attach-policy IPDT_TRUNK
++ ip flow monitor SSA-FNF-MON input
++ ip flow monitor SSA-FNF-MON output
++ et-analytics enable
+ ip arp inspection trust
+ ip dhcp snooping trust

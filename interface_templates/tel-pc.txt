@@ -1,0 +1,18 @@
+
+ switchport access vlan 15
+ switchport mode access
+ switchport voice vlan 5
+ device-tracking attach-policy IPDT_MAX_10
+ ip flow monitor SSA-FNF-MON input
+ ip flow monitor SSA-FNF-MON output
+ snmp trap mac-notification change added
+ snmp trap mac-notification change removed
+ no snmp trap link-status
+ storm-control broadcast level pps 1k
+ storm-control multicast level pps 50k
+ storm-control action shutdown
+ et-analytics enable
+ no keepalive
+ spanning-tree portfast
+ service-policy output POLICY-MAP_OUTPUT-QUEUEING
+ ip dhcp snooping limit rate 32

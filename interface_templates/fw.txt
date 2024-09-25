@@ -1,0 +1,11 @@
+ +switchport trunk native vlan 1000
+ +switchport trunk allowed vlan 3,66
+ switchport mode trunk
++ device-tracking attach-policy IPDT_TRUNK
+ ip arp inspection trust
+ ip dhcp snooping trust
++ ip flow monitor SSA-FNF-MON input
++ ip flow monitor SSA-FNF-MON output
++ et-analytics enable
++ switchport trunk allowed vlan  
++ channel-group 11 mode active
