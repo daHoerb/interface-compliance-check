@@ -1,0 +1,27 @@
+ switchport trunk native vlan 80
+ switchport mode trunk
+ switchport nonegotiate
+ device-tracking attach-policy IPDT_TRUNK
+ ip arp inspection trust
+ load-interval 30
+ ipv6 nd raguard
+ ipv6 nd suppress
+ ipv6 traffic-filter DENY_IPv6 in
+ ipv6 traffic-filter DENY_IPv6 out
+ authentication periodic
+ authentication timer reauthenticate server
+ access-session host-mode multi-host
+ access-session closed
+ access-session port-control auto
+ mab
+ dot1x pae authenticator
+ storm-control broadcast level pps 1k
+ storm-control multicast level pps 50k
+ storm-control action trap
+ macro description AP_CONNECTED
+ no keepalive
+ spanning-tree portfast trunk
+ service-policy type control subscriber PM_CTN_PORT_AUTH
+ service-policy output POLICY-MAP_OUTPUT-QUEUEING
+ ip dhcp snooping limit rate 32
+ fehlendes Konfigstück

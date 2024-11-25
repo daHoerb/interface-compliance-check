@@ -13,7 +13,70 @@ import re
 import os
 import datetime
 from collections import defaultdict
+import logging
+import sys
+import socks
+import socket
+import yaml
 
+def initialize_nornir(config):
+    """Initialize Nornir with configuration from config.yaml"""
+    from nornir.core.inventory import Defaults, Inventory
+    
+    
+    return InitNornir(
+        runner={
+            "plugin": "threaded",
+            "options": {
+                "num_workers": 100,
+            },
+        },
+        inventory={
+            "plugin": "SimpleInventory",
+            "options": {
+                "host_file": config["inventory"]["hosts_file"],
+                "group_file": config["inventory"]["groups_file"],
+                }
+        },
+        defaults={
+            "username": config['auth']['username'],
+            "password": config['auth']['password']
+        }
+        
+    )
+
+def load_config(config_file='config.yaml'):
+    """Load configuration from YAML file with CLI override support"""
+    with open(config_file, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    return config
+
+def validate_config(config):
+    """Validate required configuration parameters"""
+    required = {
+        'auth': ['username', 'password'],
+        'templates': ['dir'],
+        'inventory': ['hosts_file', 'groups_file'],
+        'connection': ['platform', 'timeout', 'session_timeout'],
+        'output': ['dir']
+    }
+    
+    for section, keys in required.items():
+        if section not in config:
+            print(f"Missing required section: {section}")
+            sys.exit(1)
+        
+        for key in keys:
+            if key not in config[section]:
+                print(f"Missing required configuration: {section}.{key}")
+                sys.exit(1)
+            
+            if not config[section][key] and section in ['auth']:
+                print(f"Empty required value: {section}.{key}")
+                sys.exit(1)
+    
+    return True
 
 def find_matching_template(description, parsed_templates):
     if not description:
@@ -41,6 +104,7 @@ def generate_missing_config_files(results):
             missing_config = []
             current_interface = None
             skip_mode = False
+            current_interface_config = []
             
             for line in result.result.split('\n'):
                 if "Skipped Interfaces" in line:
@@ -49,15 +113,29 @@ def generate_missing_config_files(results):
                 
                 if not skip_mode:
                     if line.startswith("GigabitEthernet"):
+                        # Speichere vorherige Interface-Konfiguration wenn vorhanden
+                        if current_interface and current_interface_config:
+                            missing_config.extend(["interface " + current_interface])
+                            missing_config.extend(current_interface_config)
+                            missing_config.append("!")
+                        
                         current_interface = line.strip(':')
-                        missing_config.append(f"interface {current_interface}")
+                        current_interface_config = []
                     elif line.startswith("Missing commands:"):
                         commands = line.split(":", 1)[1].strip().split(", ")
-                        missing_config.extend([f" {cmd}" for cmd in commands])
-                        missing_config.append("!")
+                        current_interface_config.extend([" " + cmd for cmd in commands])
+                    elif line.startswith("Commands to remove:"):
+                        commands = line.split(":", 1)[1].strip().split(", ")
+                        current_interface_config.extend([" no " + cmd for cmd in commands])
+            
+            # Füge das letzte Interface hinzu, wenn es Konfigurationen hat
+            if current_interface and current_interface_config:
+                missing_config.extend(["interface " + current_interface])
+                missing_config.extend(current_interface_config)
+                missing_config.append("!")
             
             if missing_config:
-                filename = os.path.join(config_dir, f"{host}_missing_config.txt")
+                filename = os.path.join(config_dir, "{}_missing_config.txt".format(host))
                 with open(filename, 'w') as f:
                     f.write("\n".join(missing_config))
     
@@ -66,65 +144,109 @@ def generate_missing_config_files(results):
 
 def generate_report(results, parsed_files, config_dir):
     now = datetime.datetime.now()
-    report_filename = f"compliance_report_{now.strftime('%Y%m%d_%H%M%S')}.txt"
+    report_filename = "compliance_report_{0}.html".format(now.strftime('%Y%m%d_%H%M%S'))
     
-    with open(report_filename, 'w') as report_file:
-        report_file.write(f"Compliance Report - Generated on {now.strftime('%Y-%m-%d %H:%M:%S')}\n")
-        report_file.write("="*50 + "\n\n")
-        
-        report_file.write("Parsed Template Files:\n")
-        for filename in parsed_files.keys():
-            report_file.write(f"- {filename}\n")
-        report_file.write("\n")
-        
-        report_file.write(f"Missing configuration files are stored in: {config_dir}\n\n")
-        
-        for host, result in results.items():
-            report_file.write(f"Host: {host}\n")
-            report_file.write("-"*20 + "\n")
-            if result.failed:
-                report_file.write(f"Task failed: {result}\n")
-            else:
-                # Gruppieren der Ports nach fehlenden Befehlen
-                port_groups = defaultdict(list)
-                skipped_ports = []
-                current_port = None
-                current_description = None
-                
-                for line in result.result.split('\n'):
-                    if line.startswith("GigabitEthernet"):
-                        current_port = line.strip(':')
-                    elif line.startswith("Description:"):
-                        current_description = line.split(":", 1)[1].strip()
-                    elif line.startswith("Missing commands:"):
-                        missing_commands = line
-                        port_groups[missing_commands].append((current_port, current_description))
-                    elif "Skipped Interfaces" in line:
-                        skipped_ports = [p.strip() for p in result.result.split("Skipped Interfaces")[1].split('\n') if p.strip()]
-                
-                # Ausgabe der gruppierten Ports
-                for missing_commands, ports in port_groups.items():
-                    report_file.write(f"{missing_commands}\n")
-                    report_file.write("Affected ports:\n")
-                    for port, description in ports:
-                        report_file.write(f"- {port} {description}\n")
-                    report_file.write("\n")
-                
-                # Ausgabe der übersprungenen Ports
-                if skipped_ports:
-                    report_file.write("Skipped Interfaces (no matching template):\n")
-                    for port in skipped_ports:
-                        report_file.write(f"- {port}\n")
-                    report_file.write("\n")
-                
-                report_file.write(f"See {host}_missing_config.txt for detailed missing configuration.\n")
+    html_content = """
+    <html>
+    <head>
+        <title>Compliance Report</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; }}
+            table {{ border-collapse: collapse; width: 100%; }}
+            th, td {{ border: 1px solid #ddd; padding: 8px; }}
+            th {{ background-color: #f2f2f2; }}
+            .compliant {{ color: green; }}
+            .non-compliant {{ color: red; }}
+            .failed {{ color: orange; }}
+        </style>
+    </head>
+    <body>
+        <h1>Compliance Report - Generated on {0}</h1>
+        <h2>Parsed Template Files:</h2>
+        <ul>
+    """.format(now.strftime('%Y-%m-%d %H:%M:%S'))
+
+    for filename in parsed_files.keys():
+        html_content += "<li>{0}</li>".format(filename)
+
+    html_content += """
+        </ul>
+        <p>Missing configuration files are stored in: {0}</p>
+        <h2>Host Results:</h2>
+        <table>
+            <tr>
+                <th>Host</th>
+                <th>Compliance Status</th>
+                <th>Details</th>
+            </tr>
+    """.format(config_dir)
+
+    for host, result in results.items():
+        if result.failed:
+            status = "FAILED"
+            details = "Task failed: {0}".format(result)
+            status_class = "failed"
+        else:
+            port_groups = defaultdict(list)
+            skipped_ports = {}
+            non_compliant_ports = []
             
-            report_file.write("\n")
-        
-        report_file.write("="*50 + "\n")
-        report_file.write("End of Report")
+            for line in result.result.split('\n'):
+                if line.startswith("GigabitEthernet"):
+                    current_port = line.strip(':')
+                elif line.startswith("Description:"):
+                    current_description = line.split(":", 1)[1].strip()
+                elif line.startswith("Missing commands:"):
+                    missing_commands = line
+                    port_groups[missing_commands].append((current_port, current_description))
+                    non_compliant_ports.append(current_port)
+                elif "Skipped Interfaces" in line:
+                    skipped_section = result.result.split("Skipped Interfaces")[1].strip().split('\n')
+                    for skipped_line in skipped_section:
+                        if ': ' in skipped_line:
+                            port, desc = skipped_line.split(': ', 1)
+                            skipped_ports[port.strip()] = desc.strip()
+            
+            if non_compliant_ports:
+                status = "NON-COMPLIANT"
+                status_class = "non-compliant"
+            else:
+                status = "COMPLIANT"
+                status_class = "compliant"
+
+            details = "<h3>Non-Compliant Interfaces:</h3><ul>"
+            for missing_commands, ports in port_groups.items():
+                details += "<li>{0}<ul>".format(missing_commands)
+                for port, description in ports:
+                    details += "<li>{0} ({1})</li>".format(port, description)
+                details += "</ul></li>"
+            details += "</ul>"
+
+            if skipped_ports:
+                details += "<h3>Skipped Interfaces:</h3><ul>"
+                for port, description in skipped_ports.items():
+                    details += "<li>{0}: {1}</li>".format(port, description)
+                details += "</ul>"
+
+        html_content += """
+            <tr>
+                <td>{0}</td>
+                <td class="{1}">{2}</td>
+                <td>{3}</td>
+            </tr>
+        """.format(host, status_class, status, details)
+
+    html_content += """
+        </table>
+    </body>
+    </html>
+    """
+
+    with open(report_filename, 'w') as report_file:
+        report_file.write(html_content)
     
     return report_filename
+
 
 
 def parse_intf_template_files_individually(directory_path):
@@ -189,45 +311,53 @@ def check_interface_compliance(config, required_commands, additional_allowed_com
     if additional_allowed_commands is None:
         additional_allowed_commands = []
     
-    allowed_commands = required_commands + additional_allowed_commands
+    allowed_commands = [cmd for cmd in required_commands if not cmd.startswith('-')] + additional_allowed_commands
+    remove_commands = [cmd[1:].strip() for cmd in required_commands if cmd.startswith('-')]
     
     config_lines = config.split('\n')
     found_commands = set()
     unexpected_commands = []
+    commands_to_remove = []
 
     for line in config_lines:
         line = line.strip()
         if not line or line.startswith('interface'):
             continue
         
-        if line in required_commands:
+        if line in allowed_commands:
             found_commands.add(line)
+        elif line in remove_commands:
+            commands_to_remove.append(line)
         elif not any(line.startswith(allowed) for allowed in allowed_commands):
             unexpected_commands.append(line)
     
-    missing_commands = set(required_commands) - found_commands
+    missing_commands = set(cmd for cmd in required_commands if not cmd.startswith('-')) - found_commands
 
-    if not missing_commands and not unexpected_commands:
+    if not missing_commands and not unexpected_commands and not commands_to_remove:
         return "Compliant"
     else:
         result = "Non-Compliant.\n"
         if missing_commands:
-            result += f"Missing commands: {', '.join(missing_commands)}\n"
+            result += "Missing commands: {}\n".format(", ".join(missing_commands))
         if unexpected_commands:
-            result += f"Unexpected commands: {', '.join(unexpected_commands)}"
+            result += "Unexpected commands: {}\n".format(", ".join(unexpected_commands))
+        if commands_to_remove:
+            result += "Commands to remove: {}\n".format(", ".join(commands_to_remove))
         return result.strip()
 
 def check_switch_compliance(task, parsed_templates):
-    host=str(task.host)
-    print(f"Processing: {host}")
+    host = str(task.host)
+    print("Processing: {}".format(host))
 
     result = task.run(netmiko_send_command, command_string="show running-config")
     config = result[0].result
 
+    print (config)
+
     interfaces = parse_interfaces(config)
 
     non_compliant_interfaces = {}
-    skipped_interfaces = []
+    skipped_interfaces = {}
 
     for interface, intf_details in interfaces.items():
         if re.match(r'^GigabitEthernet', interface, re.IGNORECASE):
@@ -246,7 +376,7 @@ def check_switch_compliance(task, parsed_templates):
                         'description': description
                     }
             else:
-                skipped_interfaces.append(interface)
+                skipped_interfaces[interface] = description
 
     if not non_compliant_interfaces and not skipped_interfaces:
         return "All checked interfaces are compliant"
@@ -255,27 +385,63 @@ def check_switch_compliance(task, parsed_templates):
         if non_compliant_interfaces:
             result += "Non-Compliant Interfaces:\n"
             for interface, details in non_compliant_interfaces.items():
-                result += f"{interface}:\n"
+                result += "{}:\n".format(interface)
                 if details['description']:
-                    result += f"Description: {details['description']}\n"
-                result += f"{details['compliance']}\n\n"
+                    result += "Description: {}\n".format(details['description'])
+                result += "{}\n\n".format(details['compliance'])
         
         if skipped_interfaces:
             result += "Skipped Interfaces (no matching template):\n"
-            for interface in skipped_interfaces:
-                result += f"{interface}\n"
+            for interface, description in skipped_interfaces.items():
+                result += "{}: {}\n".format(interface, description or "No description")
         
         return result.strip()
+
+def configure_proxy(host="127.0.0.1", port=1084, enabled=True):
+    """Configure SOCKS5 proxy settings"""
+    if enabled:
+        try:
+            socks.setdefaultproxy(socks.PROXY_TYPE_SOCKS5, host, port)
+            socket.socket = socks.socksocket
+            print(f"Proxy configured successfully: {host}:{port}")
+        except Exception as e:
+            print(f"Error configuring proxy: {e}")
+            return False
+    return True
 
 
 # Main
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Network Interface Compliance Checker")
-    parser.add_argument("-c", "--config", default="config.yaml", help="Path to the Nornir config file (default: config.yaml)")
+
+    # Required arguments
+    parser.add_argument("-c", "--config", default="config.yaml", help="Path to the configuration file (default: config.yaml)")
     parser.add_argument("-t", "--templates", default="interface_templates", help="Path to the interface templates directory (default: interface_templates)")
-    parser.add_argument("-f", "--filter", help="Optional filter string for hostname prefix")
     parser.add_argument("-o", "--output", default=".", help="Directory to store output files (default: current directory)")
+
+    #Optional arguments
+
+    parser.add_argument("-f", "--filter", help="Optional filter string for hostname prefix")  
+
+    # Optional SOCKS5 proxy settigs
+    parser.add_argument("--proxy-enabled", action="store_true", help="Enable SOCKS5 proxy")
+    parser.add_argument("--proxy-host", default="127.0.0.1", help="Proxy host (default: 127.0.0.1)")
+    parser.add_argument("--proxy-port", type=int, default=1084, help="Proxy port (default: 1084)")
+    
+    # Parse arguments
     args = parser.parse_args()
+
+
+    # Initialize nornir
+    nr = InitNornir(config_file=args.config) 
+
+    # Check proxy Settings
+    if args.proxy_enabled:
+        if not configure_proxy(args.proxy_host, args.proxy_port):
+            print("Failed to configure proxy")
+            sys.exit(1)
+
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
     # Einlesen der Template-Dateien
     parsed_files, errors = parse_intf_template_files_individually(args.templates)
@@ -286,11 +452,11 @@ if __name__ == "__main__":
             print(error)
 
     # Initialize Nornir
-    nr = InitNornir(config_file=args.config)
+    #nr = InitNornir(config_file=args.config)
     
-    # Anwenden des Filters nur wenn angegeben
+   # Apply host filter if specified
     if args.filter:
-        nr = nr.filter(lambda h: h.name.startswith(args.filter))
+        nr.filter(lambda host: args.filter in host.name)
     
     print("Hosts in inventory:")
     for host in nr.inventory.hosts:
