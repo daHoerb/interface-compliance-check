@@ -33,8 +33,8 @@ This repository contains two Python scripts for managing network interface confi
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/network-interface-management.git
-cd network-interface-management
+git clone https://github.com/daHoerb/interface-compliance-check.git
+cd interface-compliance-check.git
 ```
 
 2. Create and activate a virtual environment (recommended):
