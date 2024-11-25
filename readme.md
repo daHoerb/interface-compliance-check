@@ -1,94 +1,174 @@
-Network Interface Compliance Checker
-This Python script (interface_compliance_check.py) verifies the configuration of network switch interfaces for compliance with predefined templates. It generates detailed reports on non-compliant interfaces and creates configuration files for missing settings. The script also supports proxy functionality for SSH connections.
-Features
+# Network Interface Configuration Management
 
-Checks network switch configurations against predefined templates
-Supports flexible template matching based on interface descriptions
-Generates detailed compliance reports
-Creates configuration files for missing settings
-Groups ports with similar compliance issues for easier analysis
-Optional: Filters hosts based on hostname prefix
-Supports proxy functionality for SSH connections
+This repository contains two Python scripts for managing network interface configurations:
 
-Prerequisites
+1. `interface_compliance_check.py`: Checks interface configurations against templates
+2. `apply_missing_configs.py`: Applies missing configurations to network devices
 
-Python 3.6+
-Nornir
-Nornir-Netmiko
-Nornir-Utils
+## Features
 
-Installation
+### Interface Compliance Check
+- Validates interface configurations against predefined templates
+- Supports flexible template matching based on interface descriptions
+- Generates HTML compliance reports
+- Creates missing configuration files
+- Supports SOCKS5 proxy
+- Configurable via YAML and command line arguments
 
-Clone the repository:
-Copygit clone https://github.com/your-username/network-compliance-checker.git
+### Apply Missing Configs
+- Applies missing configurations to network devices
+- Supports dry-run mode
+- Generates detailed summary reports
+- Handles configuration rollout safely
+- Tracks successful, failed, and skipped hosts
 
-Install the required dependencies:
-Copypip install nornir nornir-netmiko nornir-utils
+## Prerequisites
 
+- Python 3.6+
+- Required Python packages (see requirements.txt)
+- Network access to target devices
+- SSH access configured (if using proxy)
 
-Configuration
+## Installation
 
-Create an interface_templates folder and add your template files.
+1. Clone the repository:
+```bash
+git clone https://github.com/yourusername/network-interface-management.git
+cd network-interface-management
+```
 
-Template files should have the .txt extension.
-Each line in the template file represents a required command.
-Lines starting with + are additionally allowed commands.
-Lines starting with # are comments and will be ignored.
+2. Create and activate a virtual environment (recommended):
+```bash
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+# or
+venv\Scripts\activate  # Windows
+```
 
+3. Install required packages:
+```bash
+pip install -r requirements.txt
+```
 
-Create a config.yaml file for Nornir with your network device details.
-SSH Proxy Configuration:
+## Configuration
 
-Create an SSH config file (e.g., ~/.ssh/config) with your proxy settings.
-Ensure that the SSH config file includes the necessary Host and ProxyCommand directives for your environment.
+### Directory Structure
+```
+.
+├── config.yaml
+├── Inventory/
+│   ├── hosts.yaml
+│   ├── groups.yaml
+│   └── defaults.yaml
+└── interface_templates/
+```
 
+### Config File Setup
+Create a `config.yaml` file with your Nornir settings:
+```yaml
+inventory:
+    plugin: SimpleInventory
+    options:
+        host_file: "Inventory/hosts.yaml"
+        group_file: "Inventory/groups.yaml"
+        defaults_file: "Inventory/defaults.yaml"
+runner:
+    plugin: serial
+options:
+    num_workers: 3
+```
 
+### Inventory Files
+1. `hosts.yaml`: Define your network devices
+```yaml
+switch1:
+    hostname: switch1.example.com
+    groups:
+        - cisco_ios
+```
 
-Usage
-The interface_compliance_check.py script supports the following command-line arguments:
+2. `groups.yaml`: Define device groups and their settings
+```yaml
+cisco_ios:
+    platform: ios
+    connection_options:
+        netmiko:
+            platform: cisco_ios
+            extras:
+                secret: ""
+```
 
--c or --config: Path to the Nornir configuration file (default: "config.yaml")
--t or --templates: Path to the directory with interface templates (default: "interface_templates")
--f or --filter: Optional filter string for hostname prefix
--o or --output: Directory to store output files (default: current directory)
+3. `defaults.yaml`: Set default credentials and settings
+```yaml
+---
+username: your_username
+password: your_password
+platform: ios
+```
 
-Examples:
+## Usage
 
-Standard execution (all hosts):
-Copypython interface_compliance_check.py
+### Interface Compliance Check
+```bash
+# Basic usage
+python interface_compliance_check.py
 
-With custom configuration and filtering:
-Copypython interface_compliance_check.py -c my_config.yaml -t custom_templates -f switch -o /path/to/output
+# With custom config
+python interface_compliance_check.py -c custom_config.yaml
 
+# With proxy enabled
+python interface_compliance_check.py --proxy-enabled
 
-The script will automatically use the SSH proxy settings defined in your SSH config file when connecting to devices.
-Output
+# With host filter
+python interface_compliance_check.py -f switch
+```
 
-A compliance report is saved in the specified output directory.
-Configuration files for missing settings are saved in the missing_configs subdirectory of the output directory.
+### Apply Missing Configurations
+```bash
+# Basic usage
+python apply_missing_configs.py
 
-Main Functions
+# Dry run mode
+python apply_missing_configs.py --dry-run
 
-parse_intf_template_files_individually: Reads the template files.
-parse_interfaces: Extracts interface configurations from the device configuration.
-check_interface_compliance: Checks the compliance of a single interface.
-check_switch_compliance: Performs the compliance check for an entire switch.
-find_matching_template: Finds the matching template based on the interface description.
-generate_missing_config_files: Creates configuration files for missing settings.
-generate_report: Generates the compliance report.
+# With custom config directory
+python apply_missing_configs.py -d custom_configs_dir
+```
 
-Customization
-You can customize the script by:
+## Output Files
 
-Modifying the template matching logic in find_matching_template.
-Adjusting the compliance checking logic in check_interface_compliance.
-Customizing the format of the generated report in generate_report.
-Modifying the SSH proxy settings in your SSH config file to suit your network environment.
+### Compliance Check
+- HTML report: `compliance_report_YYYYMMDD_HHMMSS.html`
+- Missing configs: `missing_configs/<hostname>_missing_config.txt`
 
-Contributing
-Contributions are welcome! Please fork the repository and create a pull request with your changes.
+### Apply Configs
+- Summary report: `config_application_summary_YYYYMMDD_HHMMSS.txt`
 
+## Interface Templates
+Templates should be stored in the `interface_templates` directory with `.txt` extension.
+- Lines starting with `+` are additionally allowed commands
+- Lines starting with `-` are commands to be removed
+- Lines starting with `#` are comments
 
-## Contact
+Example template:
+```text
+switchport mode access
+switchport access vlan 10
++description
+-switchport voice vlan
+```
 
+## Security Notes
+- Store sensitive credentials in `defaults.yaml`
+- Use environment variables for production
+- Always use dry-run mode first when applying configurations
+- Consider using SSH keys instead of passwords
+
+## Contributing
+Contributions are welcome! Please feel free to submit pull requests.
+
+## Authors
+Herbert Dinnobl
+
+## Support
 herbert.dinnobl@nts.eu
