@@ -454,9 +454,11 @@ if __name__ == "__main__":
     # Initialize Nornir
     #nr = InitNornir(config_file=args.config)
     
-   # Apply host filter if specified
+    # Apply host filter if specified
+    
     if args.filter:
-        nr.filter(lambda host: args.filter in host.name)
+        nr = nr.filter(lambda host: args.filter in host.name)
+        
     
     print("Hosts in inventory:")
     for host in nr.inventory.hosts:

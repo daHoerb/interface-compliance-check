@@ -5,6 +5,9 @@ import os
 import logging
 import argparse
 from datetime import datetime
+import socks
+import socket
+import sys
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -83,14 +86,43 @@ def generate_summary(success_hosts, failed_hosts, skipped_hosts, config_dir, dry
     
     return summary_file
 
+def configure_proxy(host="127.0.0.1", port=1084, enabled=True):
+    """Configure SOCKS5 proxy settings"""
+    if enabled:
+        try:
+            socks.setdefaultproxy(socks.PROXY_TYPE_SOCKS5, host, port)
+            socket.socket = socks.socksocket
+            print(f"Proxy configured successfully: {host}:{port}")
+        except Exception as e:
+            print(f"Error configuring proxy: {e}")
+            return False
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description="Apply missing configurations to network devices")
     parser.add_argument("-c", "--config", default="config.yaml", help="Path to the Nornir config file (default: config.yaml)")
     parser.add_argument("-d", "--config-dir", default="missing_configs", help="Directory containing the missing config files (default: missing_configs)")
     parser.add_argument("--dry-run", action="store_true", help="Perform a dry run without applying configurations")
+
+    # Optional SOCKS5 proxy settigs
+    parser.add_argument("--proxy-enabled", action="store_true", help="Enable SOCKS5 proxy")
+    parser.add_argument("--proxy-host", default="127.0.0.1", help="Proxy host (default: 127.0.0.1)")
+    parser.add_argument("--proxy-port", type=int, default=1084, help="Proxy port (default: 1084)")
+
     args = parser.parse_args()
 
     nr = InitNornir(config_file=args.config)
+
+    # Check proxy Settings
+    if args.proxy_enabled:
+        if not configure_proxy(args.proxy_host, args.proxy_port):
+            print("Failed to configure proxy")
+            sys.exit(1)
+
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+    
     
     success_hosts, failed_hosts, skipped_hosts = apply_missing_configs(nr, args.config_dir, args.dry_run)
     
