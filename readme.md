@@ -33,7 +33,7 @@ This repository contains two Python scripts for managing network interface confi
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/daHoerb/interface-compliance-check.git
+git clone git@gitlab.nts.at:Herbert.Dinnobl/interface-compliance-check.git
 cd interface-compliance-check.git
 ```
 
