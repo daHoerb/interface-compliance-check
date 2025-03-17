@@ -94,6 +94,7 @@ def find_matching_template(description, parsed_templates):
     
     return None
 
+
 def generate_report(results, parsed_files, config_dir):
     """Generate HTML report with compliance statistics and template details"""
     now = datetime.datetime.now()
@@ -136,7 +137,7 @@ def generate_report(results, parsed_files, config_dir):
                 if current_port:
                     has_non_compliant = True
                     host_non_compliant.add(current_port)
-            elif "Missing commands:" in line:
+            elif "Missing commands:" in line or "Unexpected commands:" in line or "Commands to remove:" in line:
                 has_non_compliant = True
             elif "Skipped Interfaces" in line:
                 skipped_section = result.strip().split("Skipped Interfaces")[1].split('\n')
@@ -281,19 +282,44 @@ def generate_report(results, parsed_files, config_dir):
             status_class = "failed"
         else:
             result = multi_result[0].result
-            port_groups = defaultdict(list)
+            port_compliance = {}
+            port_description = {}
+            port_missing_commands = {}
+            port_unexpected_commands = {}
+            port_remove_commands = {}
             skipped_ports = {}
             non_compliant_ports = []
+            current_port = None
             
             for line in result.split('\n'):
                 if line.startswith("GigabitEthernet"):
                     current_port = line.strip(':')
+                    port_compliance[current_port] = "Compliant"  # Default to compliant
                 elif line.startswith("Description:"):
-                    current_description = line.split(":", 1)[1].strip()
+                    if current_port:
+                        port_description[current_port] = line.split(":", 1)[1].strip()
+                elif line == "Non-Compliant":
+                    if current_port:
+                        port_compliance[current_port] = "Non-Compliant"
+                        non_compliant_ports.append(current_port)
                 elif line.startswith("Missing commands:"):
-                    missing_commands = line
-                    port_groups[missing_commands].append((current_port, current_description))
-                    non_compliant_ports.append(current_port)
+                    if current_port:
+                        missing_cmds = line.split(":", 1)[1].strip()
+                        port_missing_commands[current_port] = missing_cmds
+                        port_compliance[current_port] = "Non-Compliant"
+                        non_compliant_ports.append(current_port)
+                elif line.startswith("Unexpected commands:"):
+                    if current_port:
+                        unexpected_cmds = line.split(":", 1)[1].strip()
+                        port_unexpected_commands[current_port] = unexpected_cmds
+                        port_compliance[current_port] = "Non-Compliant"
+                        non_compliant_ports.append(current_port)
+                elif line.startswith("Commands to remove:"):
+                    if current_port:
+                        remove_cmds = line.split(":", 1)[1].strip()
+                        port_remove_commands[current_port] = remove_cmds
+                        port_compliance[current_port] = "Non-Compliant"
+                        non_compliant_ports.append(current_port)
                 elif "Skipped Interfaces" in line:
                     skipped_section = result.split("Skipped Interfaces")[1].strip().split('\n')
                     for skipped_line in skipped_section:
@@ -308,13 +334,27 @@ def generate_report(results, parsed_files, config_dir):
                 status = "COMPLIANT"
                 status_class = "compliant"
 
-            details = "<h3>Non-Compliant Interfaces:</h3><ul>"
-            for missing_commands, ports in port_groups.items():
-                details += "<li>{0}<ul>".format(missing_commands)
-                for port, description in ports:
-                    details += "<li>{0} ({1})</li>".format(port, description)
-                details += "</ul></li>"
-            details += "</ul>"
+            details = "<h3>Non-Compliant Interfaces:</h3>"
+            if non_compliant_ports:
+                details += "<ul>"
+                for port in non_compliant_ports:
+                    port_details = []
+                    description = port_description.get(port, "No description")
+                    details += f"<li><strong>{port}</strong> ({description})<ul>"
+                    
+                    if port in port_missing_commands:
+                        details += f"<li>Missing commands: {port_missing_commands[port]}</li>"
+                    
+                    if port in port_unexpected_commands:
+                        details += f"<li>Unexpected commands: {port_unexpected_commands[port]}</li>"
+                    
+                    if port in port_remove_commands:
+                        details += f"<li>Commands to remove: {port_remove_commands[port]}</li>"
+                    
+                    details += "</ul></li>"
+                details += "</ul>"
+            else:
+                details += "<p>All interfaces are compliant.</p>"
 
             if skipped_ports:
                 details += "<h3>Skipped Interfaces:</h3><ul>"
@@ -341,45 +381,100 @@ def generate_report(results, parsed_files, config_dir):
     
     return report_filename
 
-def generate_missing_config_files(results):
+def generate_missing_config_files(results, parsed_files):
+    """Generate missing config files while preserving template command order"""
     config_dir = "missing_configs"
     if not os.path.exists(config_dir):
         os.makedirs(config_dir)
     
-    for host, result in results.items():
-        if not result.failed:
+    for host, multi_result in results.items():
+        if not multi_result.failed:
+            result = multi_result[0].result
             missing_config = []
+            interfaces_data = {}
             current_interface = None
             skip_mode = False
-            current_interface_config = []
             
-            for line in result.result.split('\n'):
+            # First parse all interfaces and their data from results
+            for line in result.split('\n'):
                 if "Skipped Interfaces" in line:
                     skip_mode = True
                     continue
                 
                 if not skip_mode:
                     if line.startswith("GigabitEthernet"):
-                        # Speichere vorherige Interface-Konfiguration wenn vorhanden
-                        if current_interface and current_interface_config:
-                            missing_config.extend(["interface " + current_interface])
-                            missing_config.extend(current_interface_config)
-                            missing_config.append("!")
-                        
                         current_interface = line.strip(':')
-                        current_interface_config = []
-                    elif line.startswith("Missing commands:"):
-                        commands = line.split(":", 1)[1].strip().split(", ")
-                        current_interface_config.extend([" " + cmd for cmd in commands])
-                    elif line.startswith("Commands to remove:"):
-                        commands = line.split(":", 1)[1].strip().split(", ")
-                        current_interface_config.extend([" no " + cmd for cmd in commands])
+                        interfaces_data[current_interface] = {
+                            'description': None,
+                            'missing_commands': [],
+                            'remove_commands': [],
+                            'unexpected_commands': []
+                        }
+                    elif line.startswith("Description:") and current_interface:
+                        interfaces_data[current_interface]['description'] = line.split(":", 1)[1].strip()
+                    elif line.startswith("Missing commands:") and current_interface:
+                        commands = [cmd.strip() for cmd in line.split(":", 1)[1].strip().split(",")]
+                        interfaces_data[current_interface]['missing_commands'] = commands
+                    elif line.startswith("Commands to remove:") and current_interface:
+                        commands = [cmd.strip() for cmd in line.split(":", 1)[1].strip().split(",")]
+                        interfaces_data[current_interface]['remove_commands'] = commands
+                    elif line.startswith("Unexpected commands:") and current_interface:
+                        commands = [cmd.strip() for cmd in line.split(":", 1)[1].strip().split(",")]
+                        interfaces_data[current_interface]['unexpected_commands'] = commands
             
-            # Füge das letzte Interface hinzu, wenn es Konfigurationen hat
-            if current_interface and current_interface_config:
-                missing_config.extend(["interface " + current_interface])
-                missing_config.extend(current_interface_config)
-                missing_config.append("!")
+            # Generate missing config for each interface
+            for interface, data in interfaces_data.items():
+                if not data['description']:
+                    continue
+                
+                # Find matching template based on description
+                matching_template = None
+                template_content = None
+                
+                for template_name, content in parsed_files.items():
+                    template_base = template_name.split('.')[0]
+                    if template_base in data['description']:
+                        matching_template = template_name
+                        template_content = content
+                        break
+                
+                # Skip if no matching template or no changes needed
+                if not matching_template or not (data['missing_commands'] or data['remove_commands']):
+                    continue
+                
+                # Start interface config block
+                interface_config = [f"interface {interface}"]
+                if data['description']:
+                    interface_config.append(f" description {data['description']}")
+                
+                # Track which commands have been added/removed
+                processed_missing = []
+                processed_remove = []
+                
+                # Process commands in template order
+                if template_content:
+                    # First handle all commands in the original template order
+                    for cmd in template_content['required']:
+                        cmd_text = cmd.strip()
+                        
+                        if cmd_text.startswith('-'):  # Command to be removed
+                            remove_cmd = cmd_text[1:].strip()
+                            # Check if this command needs to be removed
+                            for to_remove in data['remove_commands']:
+                                if to_remove.strip() == remove_cmd:
+                                    interface_config.append(f" no {remove_cmd}")
+                                    processed_remove.append(to_remove)
+                                    break
+                        else:  # Regular command
+                            # Check if this command is missing
+                            for missing in data['missing_commands']:
+                                if missing.strip() == cmd_text:
+                                    interface_config.append(f" {cmd_text}")
+                                    processed_missing.append(missing)
+                                    break
+                
+                interface_config.append("!")
+                missing_config.extend(interface_config)
             
             if missing_config:
                 filename = os.path.join(config_dir, "{}_missing_config.txt".format(host))
@@ -388,111 +483,118 @@ def generate_missing_config_files(results):
     
     return config_dir
 
-
-
-    now = datetime.datetime.now()
-    report_filename = "compliance_report_{0}.html".format(now.strftime('%Y%m%d_%H%M%S'))
+def check_interface_compliance(config, required_commands, additional_allowed_commands=None):
+    """Check interface compliance with template requirements"""
+    if additional_allowed_commands is None:
+        additional_allowed_commands = []
     
-    html_content = """
-    <html>
-    <head>
-        <title>Compliance Report</title>
-        <style>
-            body {{ font-family: Arial, sans-serif; }}
-            table {{ border-collapse: collapse; width: 100%; }}
-            th, td {{ border: 1px solid #ddd; padding: 8px; }}
-            th {{ background-color: #f2f2f2; }}
-            .compliant {{ color: green; }}
-            .non-compliant {{ color: red; }}
-            .failed {{ color: orange; }}
-        </style>
-    </head>
-    <body>
-        <h1>Compliance Report - Generated on {0}</h1>
-        <h2>Parsed Template Files:</h2>
-        <ul>
-    """.format(now.strftime('%Y-%m-%d %H:%M:%S'))
-
-    for filename in parsed_files.keys():
-        html_content += "<li>{0}</li>".format(filename)
-
-    html_content += """
-        </ul>
-        <p>Missing configuration files are stored in: {0}</p>
-        <h2>Host Results:</h2>
-        <table>
-            <tr>
-                <th>Host</th>
-                <th>Compliance Status</th>
-                <th>Details</th>
-            </tr>
-    """.format(config_dir)
-
-    for host, result in results.items():
-        if result.failed:
-            status = "FAILED"
-            details = "Task failed: {0}".format(result)
-            status_class = "failed"
+    # Split the config into lines and clean
+    config_lines = [line.strip() for line in config.split('\n') if line.strip()]
+    
+    # Process required commands
+    standard_commands = []
+    remove_commands = []
+    
+    for cmd in required_commands:
+        cmd = cmd.strip()
+        if cmd.startswith('-'):
+            remove_commands.append(cmd[1:].strip())
         else:
-            port_groups = defaultdict(list)
-            skipped_ports = {}
-            non_compliant_ports = []
-            
-            for line in result.result.split('\n'):
-                if line.startswith("GigabitEthernet"):
-                    current_port = line.strip(':')
-                elif line.startswith("Description:"):
-                    current_description = line.split(":", 1)[1].strip()
-                elif line.startswith("Missing commands:"):
-                    missing_commands = line
-                    port_groups[missing_commands].append((current_port, current_description))
-                    non_compliant_ports.append(current_port)
-                elif "Skipped Interfaces" in line:
-                    skipped_section = result.result.split("Skipped Interfaces")[1].strip().split('\n')
-                    for skipped_line in skipped_section:
-                        if ': ' in skipped_line:
-                            port, desc = skipped_line.split(': ', 1)
-                            skipped_ports[port.strip()] = desc.strip()
-            
-            if non_compliant_ports:
-                status = "NON-COMPLIANT"
-                status_class = "non-compliant"
-            else:
-                status = "COMPLIANT"
-                status_class = "compliant"
-
-            details = "<h3>Non-Compliant Interfaces:</h3><ul>"
-            for missing_commands, ports in port_groups.items():
-                details += "<li>{0}<ul>".format(missing_commands)
-                for port, description in ports:
-                    details += "<li>{0} ({1})</li>".format(port, description)
-                details += "</ul></li>"
-            details += "</ul>"
-
-            if skipped_ports:
-                details += "<h3>Skipped Interfaces:</h3><ul>"
-                for port, description in skipped_ports.items():
-                    details += "<li>{0}: {1}</li>".format(port, description)
-                details += "</ul>"
-
-        html_content += """
-            <tr>
-                <td>{0}</td>
-                <td class="{1}">{2}</td>
-                <td>{3}</td>
-            </tr>
-        """.format(host, status_class, status, details)
-
-    html_content += """
-        </table>
-    </body>
-    </html>
-    """
-
-    with open(report_filename, 'w') as report_file:
-        report_file.write(html_content)
+            standard_commands.append(cmd)
     
-    return report_filename
+    # Track compliance
+    found_commands = set()
+    unexpected_commands = []
+    commands_to_remove = []
+    
+    # Check each config line against requirements
+    for line in config_lines:
+        if not line or line.startswith('interface'):
+            continue
+        
+        # Check against standard commands
+        matched_standard = False
+        for cmd in standard_commands:
+            if line == cmd:
+                found_commands.add(cmd)
+                matched_standard = True
+                break
+        
+        # Check against additional allowed commands
+        matched_allowed = False
+        if not matched_standard:
+            for cmd in additional_allowed_commands:
+                if line == cmd:
+                    matched_allowed = True
+                    break
+        
+        # Check against commands to remove
+        matched_remove = False
+        for cmd in remove_commands:
+            if line == cmd:
+                commands_to_remove.append(cmd)
+                matched_remove = True
+                break
+        
+        # If not matched anywhere, it's unexpected
+        if not (matched_standard or matched_allowed or matched_remove):
+            unexpected_commands.append(line)
+    
+    # Identify missing commands
+    missing_commands = set(standard_commands) - found_commands
+    
+    # Determine overall compliance
+    is_compliant = not (missing_commands or commands_to_remove or unexpected_commands)
+    
+    if is_compliant:
+        return "Compliant"
+    else:
+        result = ["Non-Compliant"]
+        if missing_commands:
+            result.append("Missing commands: {}".format(", ".join(missing_commands)))
+        if unexpected_commands:
+            result.append("Unexpected commands: {}".format(", ".join(unexpected_commands)))
+        if commands_to_remove:
+            result.append("Commands to remove: {}".format(", ".join(commands_to_remove)))
+        return "\n".join(result)
+
+def parse_intf_template_files_individually(directory_path):
+    """Parse interface template files with improved handling of command formats"""
+    result = {}
+    errors = []
+
+    try:
+        for filename in os.listdir(directory_path):
+            if filename.endswith('.txt'):
+                file_path = os.path.join(directory_path, filename)
+                try:
+                    with open(file_path, 'r') as file:
+                        required = []
+                        additional_allowed = []
+                        for line in file:
+                            line = line.strip()
+                            if not line or line.startswith('#'):
+                                continue  # Skip empty lines and comments
+                            elif line.startswith('+'):
+                                additional_allowed.append(line[1:].strip())
+                            else:
+                                # Store the full line exactly as it appears
+                                required.append(line)
+                        
+                        result[filename] = {
+                            "required": required,
+                            "additional_allowed": additional_allowed
+                        }
+                except IOError:
+                    errors.append(f"Error reading file {filename}")
+
+    except FileNotFoundError:
+        errors.append(f"Directory {directory_path} not found.")
+    except PermissionError:
+        errors.append(f"Permission denied for directory {directory_path}.")
+
+    return result, errors
+
 
 def parse_interfaces(config):
     """Parse interface configurations from running config"""
@@ -576,13 +678,12 @@ def parse_intf_template_files_individually(directory_path):
     
     return interfaces
 
-
 def check_interface_compliance(config, required_commands, additional_allowed_commands=None):
     if additional_allowed_commands is None:
         additional_allowed_commands = []
     
-    # Trennen der Kommandos in normale und zu entfernende
-    allowed_commands = [cmd for cmd in required_commands if not cmd.startswith('-')]
+    # Separating commands into standard commands and commands that should be removed
+    standard_commands = [cmd for cmd in required_commands if not cmd.startswith('-')]
     remove_commands = [cmd[1:].strip() for cmd in required_commands if cmd.startswith('-')]
     
     config_lines = config.split('\n')
@@ -595,15 +696,15 @@ def check_interface_compliance(config, required_commands, additional_allowed_com
         if not line or line.startswith('interface'):
             continue
         
-        # Prüfen auf partielle Übereinstimmung mit required commands
+        # Check for match with required commands
         matched_required = False
-        for cmd in allowed_commands:
+        for cmd in standard_commands:
             if line.startswith(cmd):
                 found_commands.add(cmd)
                 matched_required = True
                 break
         
-        # Prüfen auf partielle Übereinstimmung mit additional allowed commands
+        # Check for match with additional allowed commands
         matched_allowed = False
         if not matched_required:
             for cmd in additional_allowed_commands:
@@ -611,22 +712,22 @@ def check_interface_compliance(config, required_commands, additional_allowed_com
                     matched_allowed = True
                     break
 
-        # Prüfen auf zu entfernende Kommandos
+        # Check for commands that should be removed
         matched_remove = False
         for cmd in remove_commands:
             if line.startswith(cmd):
-                commands_to_remove.append(line)
+                commands_to_remove.append(cmd)
                 matched_remove = True
                 break
         
-        # Wenn keine Übereinstimmung gefunden wurde, ist es ein unerwartetes Kommando
+        # If no match found, it's an unexpected command
         if not (matched_required or matched_allowed or matched_remove):
             unexpected_commands.append(line)
     
-    # Ermitteln der fehlenden Kommandos
-    missing_commands = set(cmd for cmd in required_commands if not cmd.startswith('-')) - found_commands
+    # Find missing commands
+    missing_commands = set(standard_commands) - found_commands
 
-    is_compliant = not (missing_commands or commands_to_remove)
+    is_compliant = not (missing_commands or commands_to_remove or unexpected_commands)
     
     if is_compliant:
         return "Compliant"
@@ -639,6 +740,7 @@ def check_interface_compliance(config, required_commands, additional_allowed_com
         if commands_to_remove:
             result.append("Commands to remove: {}".format(", ".join(commands_to_remove)))
         return "\n".join(result)
+
 
 def check_switch_compliance(task, parsed_templates):
     """Check compliance for all interfaces on a switch"""
@@ -774,7 +876,7 @@ if __name__ == "__main__":
 
     # Generate missing config files
     config_dir = os.path.join(args.output, "missing_configs")
-    config_dir = generate_missing_config_files(results)
+    config_dir = generate_missing_config_files(results, parsed_files)
 
     # Print the results
     failed_hosts = []
